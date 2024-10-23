@@ -25,3 +25,5 @@ __all__ = [
 	"FlashAttention",
 	"AttentionConfig",
 ]
+
+__version__ = "0.0.1"

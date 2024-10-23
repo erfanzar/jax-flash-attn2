@@ -6,7 +6,7 @@ os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "1.0"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src"))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import jax
 from jax import numpy as jnp
@@ -109,8 +109,8 @@ def test_forward():
 
 
 def test_backward():
-	"""Tests the backward pass of the attention mechanism.""" 
-	
+	"""Tests the backward pass of the attention mechanism."""
+
 	q_key, k_key, v_key = jrnd.split(jrnd.PRNGKey(8), 3)
 	B, QH, KVH, QS, KS, D = 1, 32, 32, 1024, 1024, 128
 	q = jax.nn.initializers.normal(2)(q_key, (B, QS, QH, D), dtype=jnp.float16)

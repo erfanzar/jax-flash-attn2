@@ -1,46 +1,37 @@
-[project]
+[tool.poetry]
 name = "jax-flash-attn2"
-version = "0.0.0"
-authors = [{ name = "Erfan Zare Chavoshi", email = "erfanzare810@gmail.com" }]
+version = "0.0.1"
 description = "Flash Attention Implementation with Multiple Backend Support and Sharding This module provides a flexible implementation of Flash Attention with support for different backends (GPU, TPU, CPU) and platforms (Triton, Pallas, JAX)."
+authors = ["Erfan Zare Chavoshi <erfanzare810@gmail.com>"]
+license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "Apache-2.0" }
-dependencies = [
-	"jax>=0.4.33",
-	"jaxlib>=0.4.33",
-	"triton~=3.0.0",
-	"scipy==1.13.1",
-	"einops",
-	"chex",
-]
+homepage = "https://github.com/erfanzar/jax-flash-attn2"
+repository = "https://github.com/erfanzar/jax-flash-attn2"
+documentation = "https://erfanzar.github.io/jax-flash-attn2"
+keywords = ["JAX", "Deep Learning", "Machine Learning", "XLA"]
 classifiers = [
 	"Development Status :: 3 - Alpha",
 	"Intended Audience :: Developers",
 	"Topic :: Scientific/Engineering :: Artificial Intelligence",
 	"License :: OSI Approved :: Apache Software License",
 	"Programming Language :: Python :: 3",
-	"Programming Language :: Python :: 3.8",
 	"Programming Language :: Python :: 3.9",
 	"Programming Language :: Python :: 3.10",
 	"Programming Language :: Python :: 3.11",
 	"Programming Language :: Python :: 3.12",
 ]
-keywords = ["JAX", "Deep Learning", "Machine Learning", "XLA"]
 
-
-[project.urls]
-Homepage = "https://github.com/erfanzar/jax-flash-attn2"
-Issues = "https://github.com/erfanzar/jax-flash-attn2/issues"
-Documentation = "https://erfanzar.github.io/jax-flash-attn2"
-
-[build-system]
-requires = ["flit_core >=3.2,<4"]
-build-backend = "flit_core.buildapi"
+[tool.poetry.dependencies]
+python = ">=3.10"
+jax = ">=0.4.33"
+jaxlib = ">=0.4.33"
+triton = "~=3.0.0"
+scipy = "1.13.1"
+einops = "*"
+chex = "*"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B"]
-
 ignore = ["E501", "B905", "B007", "E741"]
 unfixable = ["B"]
 
@@ -55,7 +46,6 @@ unfixable = ["B"]
 quote-style = "double"
 indent-style = "tab"
 docstring-code-format = true
-
 
 [tool.ruff]
 target-version = "py311"
