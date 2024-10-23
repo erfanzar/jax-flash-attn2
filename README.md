@@ -97,6 +97,7 @@ attention = get_cached_flash_attention(
 ### Environment Variables
 
 - `FORCE_MHA`: Set to "true", "1", or "on" to force using MHA implementation even for GQA cases
+- `FLASH_ATTN_BLOCK_PTR`: set to "1" to use `tl.make_block_ptr` for accessing pointer in fwd mode (better for H100/H200 GPUs)
 
 ## Performance Tips
 
