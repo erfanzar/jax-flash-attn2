@@ -26,11 +26,11 @@ from jax_flash_attn2 import get_cached_flash_attention
 
 # Get a cached attention instance
 attention = get_cached_flash_attention(
-	backend="gpu",          						# 'gpu', 'tpu', or 'cpu'
-	platform="triton",      						# 'triton', 'pallas', or 'jax'
-	blocksize_q=64,											# BLOCK SIZE Q
-	blocksize_k=128, 										# BLOCK SIZE K
-	softmax_scale=headdim ** -0.5,      # Optional scaling factor
+	backend="gpu", # 'gpu', 'tpu', or 'cpu'
+	platform="triton", # 'triton', 'pallas', or 'jax'
+	blocksize_q=64, # BLOCK SIZE Q
+	blocksize_k=128, # BLOCK SIZE K
+	softmax_scale=headdim ** -0.5 # Optional scaling factor
 )
 
 # Use with your tensors
@@ -38,7 +38,7 @@ outputs = attention(
 	query=query_states,
 	key=key_states,
 	value=value_states,
-	bias=attention_bias,    # Optional
+	bias=attention_bias, # Optional
 )
 ```
 
