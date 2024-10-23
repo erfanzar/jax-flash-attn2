@@ -1038,6 +1038,7 @@ def _fwd_attn_kernel_call_with_residual(
 
 
 @functools.partial(custom_vjp, nondiff_argnums=[4, 5, 6])
+@functools.partial(jax.jit, static_argnums=[4, 5, 6])
 def _flash_attn2(
 	query: chex.Array,
 	key: chex.Array,
@@ -1076,7 +1077,6 @@ _flash_attn2.defvjp(
 	_fwd_attn_kernel_call_with_residual,
 	_bwd_attn_kernel_call,
 )
-
 triton_flash_mha_attn_2_gpu = _flash_attn2
 __all__ = ["triton_flash_mha_attn_2_gpu"]
 
@@ -1130,7 +1130,7 @@ def _test_forward():
 	"""Tests the forward pass of the attention mechanism."""
 	q_key, k_key, v_key = jrnd.split(jrnd.PRNGKey(8), 3)
 	q_key, k_key, v_key = jrnd.split(jrnd.PRNGKey(8), 3)
-	B, QH, KVH, QS, KS, D = 1, 32, 8, 1024, 1024, 128
+	B, QH, KVH, QS, KS, D = 1, 32, 32, 1024, 1024, 128
 	blocksize_k = 64
 	blocksize_q = 128
 	q = jax.nn.initializers.normal(2)(q_key, (B, QS, QH, D), dtype=jnp.float16)

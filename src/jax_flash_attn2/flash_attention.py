@@ -173,9 +173,6 @@ class FlashAttention:
 				f"Query heads ({num_q_heads}) must be divisible by "
 				f"key/value heads ({num_kv_heads})"
 			)
-
-		bias = self._handle_bias(bias, num_q_heads, num_kv_heads)
-
 		if self.config.platform == Platform.TRITON:
 			return self._compute_triton(query, key, value, bias)
 		elif self.config.platform == Platform.PALLAS:
@@ -192,6 +189,7 @@ class FlashAttention:
 	) -> chex.Array:
 		"""Computes attention using Triton backend."""
 		# fmt:off
+		bias = self._handle_bias(bias, query.shape[2], key.shape[2])
 		if query.shape[2] == key.shape[2] or os.environ.get("FORCE_MHA", "false") in ["true", "1", "on"]:
 			key, value = self.repeat_kv_heads(key, value, query.shape[2] // key.shape[2])
 			
@@ -223,6 +221,8 @@ class FlashAttention:
 		bias: Optional[chex.Array],
 	) -> chex.Array:
 		"""Computes attention using Pallas backend."""
+
+		bias = self._handle_bias(bias, query.shape[2], key.shape[2])
 		key, value = self.repeat_kv_heads(key, value, query.shape[2] // key.shape[2])
 
 		if self.config.backend == Backend.GPU:
@@ -272,6 +272,8 @@ class FlashAttention:
 		bias: Optional[chex.Array],
 	) -> chex.Array:
 		"""Computes attention using JAX backend."""
+
+		bias = self._handle_bias(bias, query.shape[2], key.shape[2])
 		key, value = self.repeat_kv_heads(key, value, query.shape[2] // key.shape[2])
 		return jax_flash_attn_2_mu(
 			query_state=query,

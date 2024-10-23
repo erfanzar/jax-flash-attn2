@@ -1115,6 +1115,7 @@ def _fwd_attn_kernel_call_with_residual(
 
 
 @functools.partial(custom_vjp, nondiff_argnums=[4, 5, 6])
+@functools.partial(jax.jit, static_argnums=[4, 5, 6])
 def _flash_gqa_attn2(
 	query: chex.Array,
 	key: chex.Array,
@@ -1240,7 +1241,7 @@ def _test_forward():
 def _test_backward():
 	"""Tests the backward pass of the attention mechanism."""
 	q_key, k_key, v_key = jrnd.split(jrnd.PRNGKey(8), 3)
-	B, QH, KVH, QS, KS, D = 1, 32, 32, 1024, 1024, 128
+	B, QH, KVH, QS, KS, D = 1, 32, 16, 1024, 1024, 128
 	blocksize_k = 16
 	blocksize_q = 16
 	q = jax.nn.initializers.normal(2)(q_key, (B, QS, QH, D), dtype=jnp.float16)
