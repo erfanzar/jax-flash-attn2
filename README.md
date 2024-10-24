@@ -59,7 +59,13 @@ with mesh:
 		bias=with_sharding_constraint(bias, bps).astype(dtype),
 	)
 ```
+## 📊 Benchmarks
 
+- [Triton GPU MHA](https://github.com/erfanzar/jax-flash-attn2/tree/main/benchmarks/mha/triton)
+- Triton GPU MQA (comming soon...)
+- Pallas GPU MHA (comming soon...)
+- Pallas TPU MHA (comming soon...)
+- XLA CPU MHA (comming soon...)
 ## Supported Configurations
 
 ### Backends
