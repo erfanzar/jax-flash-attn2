@@ -360,11 +360,11 @@ def _attn_refrence(query_states, key_states, value_states, bias):
 
 @lru_cache
 def get_cached_flash_attention(
-	backend: AVAILABLE_BACKENDS,
-	platform: AVAILABLE_FLASH_ATTENTION2_PLATFORMS,
-	blocksize_q: int,
-	blocksize_k: int,
-	softmax_scale: Optional[float],
+	backend: AVAILABLE_BACKENDS = None,
+	platform: AVAILABLE_FLASH_ATTENTION2_PLATFORMS = None,
+	blocksize_q: int = 128,
+	blocksize_k: int = 128,
+	softmax_scale: Optional[float] = None,
 ):
 	return create_flash_attention(
 		backend=backend,
