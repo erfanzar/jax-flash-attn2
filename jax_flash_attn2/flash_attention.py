@@ -12,35 +12,70 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NOTE:formats are weird i know it.
-
-# fmt:off
+import functools
 import os
-
 from dataclasses import dataclass
-from enum        import Enum
-from typing      import Optional, Tuple, Union, Literal
+from enum import Enum
+from typing import Literal, Optional, Tuple, Union
 
 import chex
 import einops
+import flax.linen
 import jax
 import jax.numpy as jnp
-
-from functools          import lru_cache
-from jax.extend.backend import get_backend
-
+from jax import random as jrnd
 from jax.experimental.pallas.ops.tpu.flash_attention import (
-	BlockSizes      as TPUBlockSizes,
+	BlockSizes as TPUBlockSizes,
+)
+from jax.experimental.pallas.ops.tpu.flash_attention import (
 	flash_attention as pallas_flash_attention_tpu,
 )
+from jax.extend.backend import get_backend
 
-from jax_flash_attn2.pallas_kernels import pallas_flash_mha_attn_2_gpu
-from jax_flash_attn2.triton_kernels import triton_flash_gqa_attn_2_gpu, triton_flash_mha_attn_2_gpu
-from jax_flash_attn2.cpu_calls      import jax_flash_attn_2_mu
+from jax_flash_attn2.cpu_calls import jax_flash_attn_2_mu
+from jax_flash_attn2.triton_kernels import (
+	triton_gqa_flash_attention2_gpu,
+)
+from jax_flash_attn2.pallas_kernels import (
+	pallas_flash_mha_attn_2_gpu,
+)
 
 AVAILABLE_FLASH_ATTENTION2_PLATFORMS = Literal["triton", "pallas", "jax"]
-AVAILABLE_BACKENDS                   = Literal["gpu", "tpu", "cpu"]
-BACKEND                              = get_backend().platform
+AVAILABLE_BACKENDS = Literal["gpu", "tpu", "cpu"]
+BACKEND = get_backend().platform
+
+
+def get_device_memory_usage(device: jax.Device) -> float:
+	"""
+	Get the memory usage for a specific JAX device using local_devices stats.
+
+	Args:
+	    device: JAX device to check
+	Returns:
+	    float: Memory usage in bytes
+	"""
+	try:
+		memory_stats = device.memory_stats()
+		return memory_stats["bytes_in_use"] if memory_stats else float("inf")
+	except:  # noqa
+		return float("inf")
+
+
+def free_gpu_in_process() -> int:
+	"""
+	Returns the index of the GPU with the most available memory using JAX local_devices.
+
+	Returns:
+	    int: Index of the GPU with most free memory
+	"""
+	devices = jax.local_devices()
+	gpu_devices = [d for d in devices if d.platform == "gpu"]
+
+	if not gpu_devices:
+		return 0
+
+	memory_usage = [get_device_memory_usage(device) for device in gpu_devices]
+	return memory_usage.index(min(memory_usage))
 
 
 class Backend(str, Enum):
@@ -56,18 +91,18 @@ class Platform(str, Enum):
 
 	TRITON = "triton"
 	PALLAS = "pallas"
-	JAX    = "jax"
+	JAX = "jax"
 
 
 @dataclass
 class AttentionConfig:
 	"""Configuration for Flash Attention computation."""
 
-	blocksize_q  : int                = 128
-	blocksize_k  : int                = 128
-	softmax_scale: Optional[float]    = None
-	backend      : Optional[Backend]  = None
-	platform     : Optional[Platform] = None
+	blocksize_q: int = 128
+	blocksize_k: int = 128
+	softmax_scale: Optional[float] = None
+	backend: Optional[Backend] = None
+	platform: Optional[Platform] = None
 
 	def __post_init__(self):
 		if self.backend is None:
@@ -84,8 +119,6 @@ class AttentionConfig:
 			Backend.TPU: Platform.PALLAS,
 		}
 		return platform_map.get(self.backend)
-
-# fmt:on
 
 
 class FlashAttention:
@@ -114,9 +147,7 @@ class FlashAttention:
 
 	@staticmethod
 	def repeat_kv_heads(
-		key: chex.Array,
-		value: chex.Array,
-		num_reps: int,
+		key: chex.Array, value: chex.Array, num_reps: int
 	) -> Tuple[chex.Array, chex.Array]:
 		"""Repeats key and value heads to match query heads."""
 		return (
@@ -125,18 +156,16 @@ class FlashAttention:
 		)
 
 	def _handle_bias(
-		self,
-		bias: chex.Array,
-		num_q_heads: int,
-		num_kv_heads: int,
+		self, bias: chex.Array, num_q_heads: int, num_kv_heads: int
 	) -> Optional[chex.Array]:
 		"""Processes attention bias based on head configuration."""
 		if bias is None:
 			return None
 
-		if bias.shape[1] == num_q_heads:
+		if bias.shape[1] == num_q_heads or bias.shape[1] == 1:
 			return bias
-		elif bias.shape[1] in (num_kv_heads, 1):
+
+		elif bias.shape[1] == num_kv_heads:
 			return einops.repeat(
 				bias, "b h q k -> b (h r) q k", r=num_q_heads // bias.shape[1]
 			)
@@ -152,18 +181,20 @@ class FlashAttention:
 		key: chex.Array,
 		value: chex.Array,
 		bias: Optional[chex.Array] = None,
+		adjust_sharindgs: bool = False,
 	) -> chex.Array:
 		"""
-		Computes flash attention using the configured backend and platform.
+		        Computes flash attention using the configured backend and platform.
 
-		Args:
-				query: Query tensor of shape [batch, seq_len, num_heads, dim]
-				key: Key tensor of shape [batch, seq_len, num_kv_heads, dim]
-				value: Value tensor of shape [batch, seq_len, num_kv_heads, dim]
-				bias: Optional attention bias tensor
+		        Args:
+		            query: Query tensor of shape [batch, seq_len, num_heads, dim]
+		            key: Key tensor of shape [batch, seq_len, num_kv_heads, dim]
+		            value: Value tensor of shape [batch, seq_len, num_kv_heads, dim]
+		            bias: Optional attention bias tensor
+		adjust_sharindgs: whenever to change shardings for best fit in triton kernel
 
-		Returns:
-				Output tensor of shape [batch, seq_len, num_heads, dim]
+		        Returns:
+		            Output tensor of shape [batch, seq_len, num_heads, dim]
 		"""
 		num_q_heads = query.shape[2]
 		num_kv_heads = key.shape[2]
@@ -173,8 +204,11 @@ class FlashAttention:
 				f"Query heads ({num_q_heads}) must be divisible by "
 				f"key/value heads ({num_kv_heads})"
 			)
+
+		bias = self._handle_bias(bias, num_q_heads, num_kv_heads)
+
 		if self.config.platform == Platform.TRITON:
-			return self._compute_triton(query, key, value, bias)
+			return self._compute_triton(query, key, value, bias, adjust_sharindgs)
 		elif self.config.platform == Platform.PALLAS:
 			return self._compute_pallas(query, key, value, bias)
 		else:  # Platform.JAX
@@ -186,32 +220,43 @@ class FlashAttention:
 		key: chex.Array,
 		value: chex.Array,
 		bias: Optional[chex.Array],
+		adjust_sharindgs: bool = False,
 	) -> chex.Array:
 		"""Computes attention using Triton backend."""
-		# fmt:off
-		bias = self._handle_bias(bias, query.shape[2], key.shape[2])
-		if query.shape[2] == key.shape[2] or os.environ.get("FORCE_MHA", "false") in ["true", "1", "on"]:
+		if adjust_sharindgs:
+			query_sharding = query.sharding if hasattr(query, "sharding") else None
+			target_gpu_idx = int(os.environ.get("GPU_IDX_FLASH_ATTN", free_gpu_in_process()))
+			devices = jax.local_devices(process_index=jax.process_index(), backend="gpu")
+			target_device = devices[target_gpu_idx]
+			query = jax.device_put(query, target_device)
+			key = jax.device_put(key, target_device)
+			value = jax.device_put(value, target_device)
+			if bias is not None:
+				bias = jax.device_put(bias, target_device)
+
+		if query.shape[2] == key.shape[2] or os.environ.get(
+			"FORCE_MHA",
+			"false",
+		) in ["true", "1", "on"]:
 			key, value = self.repeat_kv_heads(key, value, query.shape[2] // key.shape[2])
-			
-			return triton_flash_mha_attn_2_gpu(
-				query         = query,
-				key           = key,
-				value         = value,
-				bias          = bias,
-				softmax_scale = self.config.softmax_scale,
-				blocksize_k   = self.config.blocksize_k,
-				blocksize_q   = self.config.blocksize_q,
+			attn = triton_gqa_flash_attention2_gpu(
+				query=query,
+				key=key,
+				value=value,
+				bias=bias,
+				softmax_scale=self.config.softmax_scale,
 			)
-		return triton_flash_gqa_attn_2_gpu(
-			query           = query,
-			key             = key,
-			value           = value,
-			bias            = bias,
-			softmax_scale   = self.config.softmax_scale,
-			blocksize_k     = self.config.blocksize_k,
-			blocksize_q     = self.config.blocksize_q,
-		)
-		# fmt:on
+		else:
+			attn = triton_gqa_flash_attention2_gpu(
+				query=query,
+				key=key,
+				value=value,
+				bias=bias,
+				softmax_scale=self.config.softmax_scale,
+			)
+		if adjust_sharindgs and query_sharding is not None:
+			attn = jax.device_put(attn, query_sharding)
+		return attn
 
 	def _compute_pallas(
 		self,
@@ -221,39 +266,33 @@ class FlashAttention:
 		bias: Optional[chex.Array],
 	) -> chex.Array:
 		"""Computes attention using Pallas backend."""
-
-		bias = self._handle_bias(bias, query.shape[2], key.shape[2])
 		key, value = self.repeat_kv_heads(key, value, query.shape[2] // key.shape[2])
 
 		if self.config.backend == Backend.GPU:
-			# fmt:off
 			return pallas_flash_mha_attn_2_gpu(
-				q             = query,
-				k             = key,
-				v             = value,
-				b             = bias,
-				qblock        = self.config.blocksize_q,
-				kblock        = self.config.blocksize_k,
-				softmax_scale = self.config.softmax_scale,
+				q=query,
+				k=key,
+				v=value,
+				b=bias,
+				qblock=self.config.blocksize_q,
+				kblock=self.config.blocksize_k,
+				softmax_scale=self.config.softmax_scale,
 			)
-			# fmt:on
 
 		# TPU implementation
-		# fmt:off
 		block_sizes = TPUBlockSizes(
-			block_q           = self.config.blocksize_q,
-			block_k_major     = self.config.blocksize_k,
-			block_k           = self.config.blocksize_k,
-			block_b           = 1,
-			block_q_major_dkv = self.config.blocksize_q,
-			block_k_major_dkv = self.config.blocksize_k,
-			block_k_dkv       = self.config.blocksize_k,
-			block_q_dkv       = self.config.blocksize_q,
-			block_k_major_dq  = self.config.blocksize_k,
-			block_k_dq        = self.config.blocksize_k,
-			block_q_dq        = self.config.blocksize_q,
+			block_q=self.config.blocksize_q,
+			block_k_major=self.config.blocksize_k,
+			block_k=self.config.blocksize_k,
+			block_b=1,
+			block_q_major_dkv=self.config.blocksize_q,
+			block_k_major_dkv=self.config.blocksize_k,
+			block_k_dkv=self.config.blocksize_k,
+			block_q_dkv=self.config.blocksize_q,
+			block_k_major_dq=self.config.blocksize_k,
+			block_k_dq=self.config.blocksize_k,
+			block_q_dq=self.config.blocksize_q,
 		)
-		# fmt:on
 
 		return pallas_flash_attention_tpu(
 			q=query.transpose(0, 2, 1, 3),
@@ -272,8 +311,6 @@ class FlashAttention:
 		bias: Optional[chex.Array],
 	) -> chex.Array:
 		"""Computes attention using JAX backend."""
-
-		bias = self._handle_bias(bias, query.shape[2], key.shape[2])
 		key, value = self.repeat_kv_heads(key, value, query.shape[2] // key.shape[2])
 		return jax_flash_attn_2_mu(
 			query_state=query,
@@ -297,12 +334,12 @@ def create_flash_attention(
 	Factory function to create a FlashAttention instance with the specified configuration.
 
 	Args:
-			backend: Compute backend to use (GPU, TPU, or CPU)
-			platform: Platform to use (Triton, Pallas, or JAX)
-			**kwargs: Additional configuration parameters for AttentionConfig
+	    backend: Compute backend to use (GPU, TPU, or CPU)
+	    platform: Platform to use (Triton, Pallas, or JAX)
+	    **kwargs: Additional configuration parameters for AttentionConfig
 
 	Returns:
-			Configured FlashAttention instance
+	    Configured FlashAttention instance
 	"""
 	if isinstance(backend, str):
 		backend = Backend(backend)
@@ -311,6 +348,15 @@ def create_flash_attention(
 
 	config = AttentionConfig(backend=backend, platform=platform, **kwargs)
 	return FlashAttention(config)
+
+
+@functools.lru_cache()
+def get_cached_flash_attention(
+	backend: Optional[Union[Backend, str]] = None,
+	platform: Optional[Union[Platform, str]] = None,
+	**kwargs,
+) -> FlashAttention:
+	return create_flash_attention(backend=backend, platform=platform, **kwargs)
 
 
 def _attn_refrence(query_states, key_states, value_states, bias):
@@ -350,26 +396,96 @@ def _attn_refrence(query_states, key_states, value_states, bias):
 
 	attention_weight = jax.nn.softmax(attention_weight)
 
-	return jnp.einsum("bkhsm,bmkd->bskhd", attention_weight, value_states).reshape(
-		b,
-		qs,
-		num_q_heads,
-		d,
+	return jnp.einsum(
+		"bkhsm,bmkd->bskhd",
+		attention_weight,
+		value_states,
+	).reshape(b, qs, num_q_heads, d)
+
+
+def _test_backward():
+	"""Tests the backward pass of the attention mechanism."""
+	q_key, k_key, v_key = jrnd.split(jrnd.PRNGKey(8), 3)
+	B, QH, KVH, QS, KS, D = 1, 32, 32, 2048, 2048, 128
+	blocksize_k = 16
+	blocksize_q = 16
+	q = jax.nn.initializers.normal(2)(q_key, (B, QS, QH, D), dtype=jnp.float16)
+	k = jax.nn.initializers.normal(2)(k_key, (B, KS, KVH, D), dtype=jnp.float16)
+	v = jax.nn.initializers.normal(2)(v_key, (B, KS, KVH, D), dtype=jnp.float16)
+	b = (
+		jnp.where(
+			jrnd.randint(v_key, (B, QH, QS, KS), 0, 4) > 2,
+			jnp.finfo(jnp.float16).min,
+			0,
+		)
+		if True
+		else None
 	)
-
-
-@lru_cache
-def get_cached_flash_attention(
-	backend: AVAILABLE_BACKENDS = None,
-	platform: AVAILABLE_FLASH_ATTENTION2_PLATFORMS = None,
-	blocksize_q: int = 128,
-	blocksize_k: int = 128,
-	softmax_scale: Optional[float] = None,
-):
-	return create_flash_attention(
-		backend=backend,
-		platform=platform,
-		blocksize_q=blocksize_q,
+	attention = create_flash_attention(
 		blocksize_k=blocksize_k,
-		softmax_scale=softmax_scale,
+		blocksize_q=blocksize_q,
 	)
+	try:
+		co = jax.grad(lambda *x: attention(*x).sum())(q, k, v, b)
+		print("Custom op backward pass gradients:")
+		print(co[0, 0, 0, :5])  # Print last 5 elements of last head of last batch
+	except Exception as er:
+		print(f"Custom op backward pass failed: {er}")
+		co = None
+
+	try:
+		fo = jax.grad(lambda *x: flax.linen.attention.dot_product_attention(*x).sum())(
+			q, k, v, b
+		)
+
+		print(fo[0, 0, 0, :5])  # Print last 5 elements of last head of last batch
+	except Exception as e:
+		print(f"Flax backward pass failed : {e}")
+		fo = None
+		exit()
+
+	if fo is not None and co is not None:
+		if jnp.allclose(co, fo, atol=0.125):
+			print("Backward pass results are close.")
+		else:
+			print("Backward pass results differ significantly!")
+
+
+def _test_forward():
+	q_key, k_key, v_key = jrnd.split(jrnd.PRNGKey(8), 3)
+	B, QH, KH, QS, KS, D = 1, 32, 32, 2048, 2048, 128
+	blocksize_k = 16
+	blocksize_q = 16
+	q = jax.nn.initializers.normal(2)(q_key, (B, QS, QH, D), dtype=jnp.float16)
+	k = jax.nn.initializers.normal(2)(k_key, (B, KS, KH, D), dtype=jnp.float16)
+	v = jax.nn.initializers.normal(2)(v_key, (B, KS, KH, D), dtype=jnp.float16)
+	b = (
+		jnp.where(
+			jrnd.randint(v_key, (B, 1, QS, KS), 0, 4) > 2,
+			jnp.finfo(jnp.float16).min,
+			0,
+		)
+		if True
+		else None
+	)
+	attention = create_flash_attention(blocksize_q=blocksize_q, blocksize_k=blocksize_k)
+	print("QKV Allocated")
+	try:
+		co = attention(q, k, v, b)
+		print(co[0, 0, 0, :5])
+	except Exception as er:
+		print("Flash OOM", er)
+		co = None
+	try:
+		fo = _attn_refrence(q, k, v, b)
+		print(fo[0, 0, 0, :5])
+	except Exception as er:
+		print("Flax OOM", er)
+		fo = None
+	if fo is not None and co is not None:
+		print(jnp.allclose(co, fo, 0, 0.125))
+
+
+if __name__ == "__main__":
+	_test_forward()
+	_test_backward()

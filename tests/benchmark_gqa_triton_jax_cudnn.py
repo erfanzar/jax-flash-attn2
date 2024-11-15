@@ -1,3 +1,4 @@
+import functools
 import jax
 import jaxlib
 import triton
@@ -71,14 +72,18 @@ def mha_attention_benchmark(
 				flash_attn = get_cached_flash_attention()
 				fn = lambda: flash_attn(query, key, value, bias)
 			elif provider == "jax":
-				_fn = jax.jit(nn.dot_product_attention)
+				_fn = jax.jit(
+					functools.partial(nn.dot_product_attention, implementation="cudnn")
+				)
 				fn = lambda: _fn(query, key, value, bias).block_until_ready()
 		elif mode == "bwd":
 			if provider == "triton":
 				flash_attn = get_cached_flash_attention()
 				fn = lambda: jax.grad(lambda *x: flash_attn(*x).sum())(query, key, value, bias)
 			elif provider == "jax":
-				_fn = jax.jit(nn.dot_product_attention)
+				_fn = jax.jit(
+					functools.partial(nn.dot_product_attention, implementation="cudnn")
+				)
 				fn = lambda: jax.grad(lambda *x: _fn(*x).sum())(
 					query, key, value, bias
 				).block_until_ready()
@@ -94,5 +99,5 @@ def mha_attention_benchmark(
 if __name__ == "__main__":
 	mha_attention_benchmark.run(
 		print_data=True,
-		save_path="benchmarks/triton-vs-jax-sdpa",
+		save_path="benchmarks/triton-vs-jax-sdpa-cudnn",
 	)

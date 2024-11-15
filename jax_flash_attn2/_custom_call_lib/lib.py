@@ -12,18 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Edited in EasyDeL For caching kernels which doesn't work in jax-triton version
+"""Module for calling Triton kernels from JAX."""
+
 from __future__ import annotations
 
 import copy
 import dataclasses
 import functools
+import hashlib
 import inspect
 import os
+import pickle
 import pprint
 import tempfile
 import types
 import zlib
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any, List, Protocol, Union
 
 import jax
@@ -33,6 +39,7 @@ import jaxlib
 import numpy as np
 from jax import tree_util
 from jax._src import core, state, util
+from jax._src.lib import gpu_triton as triton_kernel_call_lib
 from jax._src.lib.mlir import ir
 from jax.interpreters import mlir, xla
 
@@ -57,15 +64,31 @@ except ImportError:
 	pass
 
 
-try:
-	from jax._src.lib import gpu_triton as triton_kernel_call_lib
-except ImportError:
-	raise ValueError(
-		"Cannot import jaxlib triton library. You may need a newer version of jaxlib."
-	) from None
+def get_cache_dir() -> Path:
+	home_dir = Path.home()
+	app_name = "triton-compiled-kernels"
+	if os.name == "nt":  # Windows
+		cache_dir = (
+			Path(os.getenv("LOCALAPPDATA", home_dir / "AppData" / "Local")) / app_name
+		)
+	elif os.name == "posix":  # Linux and macOS
+		if "darwin" in os.sys.platform:  # macOS
+			cache_dir = home_dir / "Library" / "Caches" / app_name
+		else:  # Linux
+			cache_dir = home_dir / ".cache" / app_name
+	else:
+		cache_dir = home_dir / ".cache" / app_name
+	cache_dir.mkdir(parents=True, exist_ok=True)
+	return cache_dir
 
-os.environ["TRITON_CACHE_DIR"] = ""
-_JAX_TRITON_DUMP_DIR = os.environ.get("JAX_TRITON_DUMP_DIR")
+
+_JAX_TRITON_DUMP_DIR = Path(os.environ.get("JAX_TRITON_DUMP_DIR", get_cache_dir()))
+_CACHE_TRITON_KERNELS = os.environ.get("CACHE_TRITON_KERNELS", "true") in [
+	"1",
+	"on",
+	"true",
+	"yes",
+]
 map, unsafe_map = util.safe_map, map
 zip, unsafe_zip = util.safe_zip, zip
 
@@ -87,6 +110,7 @@ _JAX_TO_TRITON_TYPE_MAP = {
 	jnp.dtype("uint32"): "u32",
 	jnp.dtype("uint16"): "u16",
 	jnp.dtype("uint8"): "u8",
+	# Triton defines a 'B' type, which is an alias for both i1 and bool.
 	jnp.dtype("bool"): "B",
 }
 
@@ -248,8 +272,8 @@ def compile_ttir_to_ptx_inplace(
 		print(ptx)
 	name = metadata["name"]
 	cluster_dims = metadata["cluster_dims"]
-	ttgir = str(ttgir) if _JAX_TRITON_DUMP_DIR else None
-	llir = str(llir) if _JAX_TRITON_DUMP_DIR else None
+	ttgir = str(ttgir)
+	llir = str(llir)
 	return CompilationResult(
 		binary=ptx,
 		name=name,
@@ -290,8 +314,8 @@ def compile_ttir_to_hsaco_inplace(
 	hsaco = hip_backend.make_hsaco(amdgcn, metadata, hip_options)
 
 	name = metadata["name"]
-	ttgir = str(ttgir) if _JAX_TRITON_DUMP_DIR else None
-	llir = str(llir) if _JAX_TRITON_DUMP_DIR else None
+	ttgir = str(ttgir)
+	llir = str(llir)
 	cluster_dims = (0, 0, 0)
 	fd, hsaco_path = tempfile.mkstemp()
 	with os.fdopen(fd, "wb") as f:
@@ -335,6 +359,7 @@ def get_or_create_triton_kernel(
 		raise ValueError("num_ctas > 1 unsupported before Hopper.")
 
 	signature = {fn.arg_names[i]: v for i, v in enumerate(arg_dtypes)}
+
 	mock_torch_tensor = types.SimpleNamespace(data_ptr=lambda: 16)
 	args_for_specialization_attr = [mock_torch_tensor] * len(arg_dtypes)
 	for i, _, v in scalar_args:
@@ -358,21 +383,21 @@ def get_or_create_triton_kernel(
 	)
 	kernel = _COMPILED_KERNEL_CACHE.get(cache_key)
 
-	if kernel is None:
-		opts = {
-			"num_warps": num_warps,
-			"num_stages": num_stages,
-			"num_ctas": num_ctas,
-			"optimize_epilogue": False,
-			"debug": dump,
-			"enable_fp_fusion": enable_fp_fusion,
-		}
+	kernel_hash = hashlib.sha256(str(cache_key).encode("utf-8")).hexdigest()
 
+	opts = {
+		"num_warps": num_warps,
+		"num_stages": num_stages,
+		"num_ctas": num_ctas,
+		"optimize_epilogue": False,
+		"debug": dump,
+		"enable_fp_fusion": enable_fp_fusion,
+	}
+	if kernel is None and not Path(_JAX_TRITON_DUMP_DIR / kernel_hash).exists():
 		backend = backend_init_func(device, compute_capability)
 		options = backend.parse_options(opts)
 
-		kernel_hash = abs(hash(cache_key))
-		if _JAX_TRITON_DUMP_DIR:
+		if _CACHE_TRITON_KERNELS:
 			os.makedirs(f"{_JAX_TRITON_DUMP_DIR}/{kernel_hash}")
 			with open(f"{_JAX_TRITON_DUMP_DIR}/{kernel_hash}/config", "w") as f:
 				pprint.pprint(cache_key, stream=f)
@@ -398,6 +423,8 @@ def get_or_create_triton_kernel(
 				module_map=backend.get_module_map(),
 			)
 			if "module_map" in inspect.getfullargspec(code_gen.ast_to_ttir).args
+			# Triton changes ASTSource.ast_to_ttir to include module_map. Handle
+			# backward compatibility here.
 			else code_gen.ast_to_ttir(
 				fn,
 				specialization=tc.ASTSource(
@@ -414,29 +441,19 @@ def get_or_create_triton_kernel(
 		ttir = str(module)
 
 		compilation_result = compile_ttir_inplace(
-			module, backend, options, compute_capability, platform
+			module,
+			backend,
+			options,
+			compute_capability,
+			platform,
 		)
-
+		if _CACHE_TRITON_KERNELS:
+			(_JAX_TRITON_DUMP_DIR / kernel_hash).mkdir(parents=True, exist_ok=True)
+			pickle.dump(
+				(compilation_result, ttir),
+				open(_JAX_TRITON_DUMP_DIR / kernel_hash / "compilation_result", "wb"),
+			)
 		kernel_name = compilation_result.name
-		if _JAX_TRITON_DUMP_DIR:
-			with open(f"{_JAX_TRITON_DUMP_DIR}/{kernel_hash}/{kernel_name}.ttir", "w") as f:
-				f.write(ttir)
-			with open(f"{_JAX_TRITON_DUMP_DIR}/{kernel_hash}/{kernel_name}.ptx", "w") as f:
-				f.write(compilation_result.ptx)
-			with open(f"{_JAX_TRITON_DUMP_DIR}/{kernel_hash}/{kernel_name}.ttgir", "w") as f:
-				f.write(compilation_result.ttgir)
-			with open(f"{_JAX_TRITON_DUMP_DIR}/{kernel_hash}/{kernel_name}.llir", "w") as f:
-				f.write(compilation_result.llir)
-			with open(
-				f"{_JAX_TRITON_DUMP_DIR}/{kernel_hash}/{kernel_name}.compile_info",
-				"w",
-			) as f:
-				f.write(
-					f"{kernel_name}: shared_mem_bytes:"
-					f" {compilation_result.shared_mem_bytes}, cluster_dims:"
-					f" {compilation_result.cluster_dims}\n"
-				)
-
 		kernel = triton_kernel_call_lib.TritonKernel(
 			kernel_name,
 			num_warps,
@@ -448,6 +465,22 @@ def get_or_create_triton_kernel(
 		)
 
 		_COMPILED_KERNEL_CACHE[cache_key] = kernel
+	elif Path(_JAX_TRITON_DUMP_DIR / kernel_hash).exists():
+		compilation_result, ttir = pickle.load(
+			open(
+				_JAX_TRITON_DUMP_DIR / kernel_hash / "compilation_result",
+				"rb",
+			)
+		)
+		kernel = triton_kernel_call_lib.TritonKernel(
+			compilation_result.name,
+			num_warps,
+			compilation_result.shared_mem_bytes,
+			compilation_result.binary,
+			ttir,
+			compute_capability,
+			*compilation_result.cluster_dims,
+		)
 
 	return kernel, specialization_attr
 
@@ -671,6 +704,38 @@ def triton_call(
 	serialized_metadata: bytes = b"",
 	**metaparams: Any,
 ) -> Any:
+	"""Calls a Triton kernel with `jax.Array` arguments.
+	Args:
+	  *args: Inputs for the Triton kernel.
+	  kernel: A Triton kernel (e.g. a function decorated with `triton.jit`). All
+	    static values should be annotated with `triton.language.constexpr`.
+	  out_shape: A `jax.ShapeDtypeStruct` (or something that has `.shape` and
+	    `.dtype` attributes) or a sequence thereof that specify the output(s) of
+	    the kernel. Pointers for each of the `jax.ShapeDtypeStruct`s in
+	    `out_shape` will be passed into `kernel` following the input parameters.
+	  grid: An integer, tuple of up to 3 integers, or a function that returns a
+	    tuple of up to 3 integers. When `grid` is an integer, `kernel` is
+	    invocated in `grid`-many parallel executions. When `grid` is a sequence of
+	    integers, `kernel` is launched in a `prod(grid)`-many parallel execution.
+	    When `grid` is a function, it is passed `**metaparams` and should return a
+	    tuple of up to 3 integers.
+	  input_output_aliases: A dictionary mapping input argument indices to output
+	    indices. Providing a mapping will alias the corresponding buffers.
+	  zeroed_outputs: A sequence of indices, or a function returning a sequence of
+	    indices, for outputs that should be zeroed before the kernel is launched.
+	  num_warps: The number of warps used to execute the Triton kernel.
+	  num_stages: The number of stages emitted by the Triton compiler.
+	  num_ctas: The size of thread blocks per cluster to be used on GPUs with
+	    compute capabilities >= 9.0. It must be less or equal to 8.
+	  debug: Prints out intermediate IRs if True for debugging purposes.
+	  serialized_metadata: Arbitrary metadata that will be added into the
+	    serialized kernel call.
+	  **metaparams: Additional keyword arguments that will be provided to a `grid`
+	    (if it is a function) and to the Triton kernel as `constexpr` arguments.
+
+	Returns:
+	  Outputs from the Triton kernel.
+	"""
 	if not CAN_USE_TRITON:
 		raise ValueError("`triton_call` is only available when `triton` is installed.")
 	out_shape = tree_util.tree_map(

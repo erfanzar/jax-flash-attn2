@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from jax_flash_attn2.triton_kernels.gqa_kernel import triton_flash_gqa_attn_2_gpu
-from jax_flash_attn2.triton_kernels.mha_kernel import triton_flash_mha_attn_2_gpu
+from jax_flash_attn2.triton_kernels.gqa_kernel import triton_gqa_flash_attention2_gpu
 
-__all__ = ["triton_flash_gqa_attn_2_gpu", "triton_flash_mha_attn_2_gpu"]
+__all__ = ["triton_gqa_flash_attention2_gpu"]
