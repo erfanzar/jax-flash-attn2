@@ -32,7 +32,7 @@ import triton
 from jax import custom_vjp, random as jrnd
 from jax import numpy as jnp
 from triton import language as tl
-from fjformer.jax_triton import triton_call
+from jax_flash_attn2._custom_call_lib import triton_call
 
 FLASH_ATTN_BWD_ = True
 
@@ -383,6 +383,7 @@ def _fwd_attention_kernel_call(
 	stride_qb, stride_qm, stride_qh, stride_qg, stride_qd = get_strides(query.shape)
 	stride_kb, stride_kn, stride_kh, stride_kd = get_strides(key.shape)
 	stride_vb, stride_vn, stride_vh, stride_vd = get_strides(value.shape)
+	device_id = getattr(getattr(query, "device", None), "id", 0)
 	out, lse = triton_call(
 		query,
 		key,
@@ -429,6 +430,7 @@ def _fwd_attention_kernel_call(
 			num_groups,
 		),
 		name="triton::ops::_fwd_attn_kernel",
+		device=device_id,
 		**metaparams,
 	)
 	return out.reshape(batch, seqlen_q, num_q_heads, headdim), lse
@@ -783,6 +785,7 @@ def _bwd_attention_kernel_call(
 
 		num_warps = 4 if headdim <= 64 else 8
 
+		device_id = getattr(getattr(query, "device", None), "id", 0)
 		# kernel kwargs
 		metaparams = dict(
 			BLOCK_M=128,
@@ -824,6 +827,7 @@ def _bwd_attention_kernel_call(
 			),
 			kernel=_bwd_do_attention_kernel,
 			name="triton::ops::_bwd_do_attention_kernel",
+			device=device_id,
 			**metaparams,
 		)
 		metaparams = dict(
@@ -889,6 +893,7 @@ def _bwd_attention_kernel_call(
 			),
 			out_shape=bwd_kernel_out_shapes,
 			name="triton::ops::_bwd_attention_kernel",
+			device=device_id,
 			**metaparams,
 		)
 

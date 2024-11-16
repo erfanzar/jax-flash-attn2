@@ -339,6 +339,7 @@ def get_or_create_triton_kernel(
 	fn,
 	arg_dtypes,
 	scalar_args,
+	device,
 	*,
 	num_warps,
 	num_stages,
@@ -352,7 +353,6 @@ def get_or_create_triton_kernel(
 		num_warps = 4
 	if num_stages is None:
 		num_stages = 3
-	device = 0
 	if compute_capability is None:
 		compute_capability = triton_kernel_call_lib.get_compute_capability(device)
 	if num_ctas > 1 and compute_capability < 90:
@@ -504,6 +504,7 @@ def triton_kernel_call_lowering(
 	zeroed_outputs,
 	debug,
 	serialized_metadata,
+	device,
 	**metaparams,
 ):
 	if jaxlib.version.__version_info__ < (0, 3, 22) and input_output_aliases:
@@ -600,6 +601,7 @@ def triton_kernel_call_lowering(
 			fn,
 			arg_dtypes,
 			scalar_args,
+			device,
 			num_warps=params["num_warps"],
 			num_stages=params["num_stages"],
 			num_ctas=params["num_ctas"],
@@ -702,6 +704,7 @@ def triton_call(
 	zeroed_outputs: (Sequence[int] | Callable[[dict[str, Any]], Sequence[int]]) = (),
 	debug: bool = False,
 	serialized_metadata: bytes = b"",
+	device: int = 0,
 	**metaparams: Any,
 ) -> Any:
 	"""Calls a Triton kernel with `jax.Array` arguments.
@@ -730,6 +733,7 @@ def triton_call(
 	  debug: Prints out intermediate IRs if True for debugging purposes.
 	  serialized_metadata: Arbitrary metadata that will be added into the
 	    serialized kernel call.
+		device (int): device id in current process to compile triton kernel on
 	  **metaparams: Additional keyword arguments that will be provided to a `grid`
 	    (if it is a function) and to the Triton kernel as `constexpr` arguments.
 
@@ -774,6 +778,7 @@ def triton_call(
 		zeroed_outputs=zeroed_outputs,
 		debug=debug,
 		serialized_metadata=serialized_metadata,
+		device=device,
 		**metaparams,
 	)
 	return tree_util.tree_unflatten(out_tree, out_flat)
