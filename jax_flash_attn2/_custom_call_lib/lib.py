@@ -449,10 +449,11 @@ def get_or_create_triton_kernel(
 		)
 		if _CACHE_TRITON_KERNELS:
 			(_JAX_TRITON_DUMP_DIR / kernel_hash).mkdir(parents=True, exist_ok=True)
-			pickle.dump(
-				(compilation_result, ttir),
-				open(_JAX_TRITON_DUMP_DIR / kernel_hash / "compilation_result", "wb"),
-			)
+			with open(
+			      _JAX_TRITON_DUMP_DIR / kernel_hash / "compilation_result",
+			      "rb",
+			) as buffer:
+			      compilation_result, ttir = pickle.load(buffer)
 		kernel_name = compilation_result.name
 		kernel = triton_kernel_call_lib.TritonKernel(
 			kernel_name,
