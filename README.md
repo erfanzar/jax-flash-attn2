@@ -1,17 +1,6 @@
-# jax-flash-attn2
+# JAX-Flash-Attention2
 
 A flexible and efficient implementation of Flash Attention 2.0 for JAX, supporting multiple backends (GPU/TPU/CPU) and platforms (Triton/Pallas/JAX).
-
-## Features
-
-- 🚀 Multiple backend support: GPU, TPU, and CPU
-- 🔧 Multiple platform implementations: Triton, Pallas, and JAX
-- ⚡ Efficient caching of attention instances
-- 🔄 Support for Grouped Query Attention (GQA) and headdims up to 256.
-- 📊 JAX sharding-friendly implementation
-- 🎯 Automatic platform selection based on backend
-- 🧩 Compatible with existing JAX mesh patterns
-
 
 ## Installation
 
@@ -19,112 +8,242 @@ A flexible and efficient implementation of Flash Attention 2.0 for JAX, supporti
 pip install jax-flash-attn2
 ```
 
-## Quick Start
+## Basic Usage
 
 ```python
-from jax_flash_attn2 import get_cached_flash_attention
+import jax
+import jax.numpy as jnp
+import jax_flash_attn2 as jfa
 
-# Get a cached attention instance
-attention = get_cached_flash_attention(
-	backend="gpu", # 'gpu', 'tpu', or 'cpu'
-	platform="triton", # 'triton', 'pallas', or 'jax'
-	blocksize_q=64, # BLOCK SIZE Q
-	blocksize_k=128, # BLOCK SIZE K
-	softmax_scale=headdim ** -0.5 # Optional scaling factor
+# Initialize the FlashAttention module with desired configuration
+flash_attention = jfa.FlashAttention(
+ jfa.AttentionConfig(
+  platform=jfa.Platform.TRITON,  # Options: TRITON, PALLAS, JAX
+  backend=jfa.Backend.GPU,       # Options: GPU, TPU, CPU
+ )
 )
 
-# Use with your tensors
-outputs = attention(
-	query=query_states,
-	key=key_states,
-	value=value_states,
-	bias=attention_bias, # Optional
+# Create sample inputs
+batch_size, num_heads, seq_len, head_dim = 2, 4, 512, 64
+query = jax.random.normal(jax.random.PRNGKey(0), (batch_size, num_heads * 4, seq_len, head_dim), "f2")
+key = jax.random.normal(jax.random.PRNGKey(1), (batch_size, num_heads, seq_len, head_dim), "f2")
+value = jax.random.normal(jax.random.PRNGKey(2), (batch_size, num_heads, seq_len, head_dim), "f2")
+
+# Compute attention
+output = flash_attention(
+ query=query,
+ key=key,
+ value=value,
+ causal=True  # Enable causal masking for decoder-only models
 )
+
+# output shape: (batch_size, num_heads, seq_len, head_dim)
 ```
 
-## Usage with JAX Sharding
+## Advanced Usage
+
+### With Attention Mask
 
 ```python
-with mesh:
-	attention_outputs = get_cached_flash_attention(
-		backend="gpu",
-		platform="triton",
-		blocksize_q=128,
-		blocksize_k=128,
-		softmax_scale=None,
-	)(
-		query=with_sharding_constraint(query_states, qps).astype(dtype),
-		key=with_sharding_constraint(key_states, kps).astype(dtype),
-		value=with_sharding_constraint(value_states, vps).astype(dtype),
-		bias=with_sharding_constraint(bias, bps).astype(dtype),
-	)
-```
-## 📊 Benchmarks
+# Create an attention mask (1 = attend, 0 = mask)
+attention_mask = jnp.ones((batch_size, 1, seq_len, seq_len))  # Allow full attention
+# For example, mask the first 100 tokens from attending to the last 100 tokens
+attention_mask = attention_mask.at[:, :, :100, -100:].set(0)
 
-- [Triton GPU (MHA/GQA) vs JAX SDPA CUDNN](https://github.com/erfanzar/jax-flash-attn2/tree/main/benchmarks/triton-vs-jax-sdpa-cudnn)
-- [Triton GPU (MHA/GQA) vs JAX SDPA](https://github.com/erfanzar/jax-flash-attn2/tree/main/benchmarks/triton-vs-jax-sdpa)
-- Pallas GPU MHA (comming soon...)
-- Pallas TPU MHA (comming soon...)
-- XLA CPU MHA (comming soon...)
-## Supported Configurations
-
-### Backends
-- `gpu`: CUDA/AMD-capable GPUs
-- `tpu`: Google Cloud TPUs
-- `cpu`: CPU fallback
-
-### Platforms
-- `triton`: Optimized for NVIDIA/AMD GPUs
-- `pallas`: Optimized for TPUs and supported on GPUs
-- `jax`: Universal fallback, supports all backends
-
-### Valid Backend-Platform Combinations
-
-| Backend          | Supported Platforms |
-| ---------------- | ------------------- |
-| GPU - AMD/NVIDIA | Triton, JAX         |
-| GPU - NVIDIA     | Triton, Pallas, JAX |
-| TPU              | Pallas, JAX         |
-| CPU              | JAX                 |
-
-## Advanced Configuration
-
-### Custom Block Sizes
-
-```python
-attention = get_cached_flash_attention(
-    backend="gpu",
-    platform="triton",
-    blocksize_q=128,    # Customize query block size # Ignored for Triton
-    blocksize_k=128,    # Customize key block size Ignored for Triton
-    softmax_scale=1.0,  # Custom softmax scaling
+output = flash_attention(
+ query=query,
+ key=key,
+ value=value,
+ attention_mask=attention_mask,
+ causal=False  # Using explicit mask instead of causal
 )
 ```
 
-### Environment Variables
+### With Attention Bias
 
-- `"GPU_IDX_FLASH_ATTN"` to define GPU INDEX force for computing triton attention
-- `"CACHE_TRITON_KERNELS"` whenever to cache triton kernels (`defualt true`)
-- `"_JAX_TRITON_DUMP_DIR"` path to save triton kernels
-- `"BLOCKSIZE_M_FLASH_ATTN"` block size q seq length for backward
-- `"BLOCKSIZE_N_FLASH_ATTN"` block size kv seq length for backward
+```python
+# Create an attention bias
+bias = jnp.zeros((batch_size, 1, seq_len, seq_len))
+# Add position-dependent bias
+for i in range(seq_len):
+ for j in range(seq_len):
+  bias = bias.at[:, :, i, j].set(1.0 / (1.0 + abs(i - j)))
 
-## Performance Tips
- 
-1. **Platform Selection**:
-   - For NVIDIA GPUs: prefer `triton`
-   - For TPUs: prefer `pallas`
-   - For CPU or fallback: use `jax`
+output = flash_attention(
+ query=query,
+ key=key,
+ value=value,
+ bias=bias
+)
+```
 
-2. **Caching**: The `get_cached_flash_attention` function automatically caches instances based on parameters. No need to manage caching manually.
+### With Dropout
 
-## Requirements
+```python
+output = flash_attention(
+ query=query,
+ key=key,
+ value=value,
+ dropout_prob=0.1,
+ dropout_seed=42,
+ causal=True
+)
+```
 
-- JAX
-- einops
-- chex
-- jax.experimental.pallas (for TPU support)
-- triton (for GPU optimized implementation)
+## Flax Modules with JFA2
+
+Here's an example of integrating jax-flash-attn2 within a Transformer model implemented in Flax:
+
+```python
+import typing as tp
+from functools import partial
+
+import chex
+import flax.nnx as nn
+import jax
+import jax.numpy as jnp
+
+import jax_flash_attn2 as jfa
+
+
+class JFAttention2(nn.Module):
+ def __init__(
+  self,
+  hidden_size: int,
+  head_dim: int,
+  num_attention_heads: int,
+  num_key_value_heads: int,
+  dtype: jnp.dtype = jnp.float32,
+  param_dtype: jnp.dtype = jnp.float32,
+  precision: jax.lax.PrecisionLike = None,
+  *,
+  rngs: nn.Rngs = None,
+ ):
+  if rngs is None:
+   rngs = nn.Rngs(0)
+  self.dtype = dtype
+  self.param_dtype = param_dtype
+  self.precision = precision
+  self.rngs = rngs
+
+  self.hidden_size = hidden_size
+  self.head_dim = head_dim
+  self.num_attention_heads = num_attention_heads
+  self.num_key_value_heads = num_key_value_heads
+
+  self.num_key_value_groups = num_attention_heads // num_key_value_heads
+
+  if self.num_key_value_groups == 1:
+   assert num_attention_heads == num_key_value_heads
+
+  linear_class = partial(
+   nn.Linear,
+   dtype=dtype,
+   param_dtype=param_dtype,
+   use_bias=False,
+   kernel_init=jax.nn.initializers.normal(0.02),
+   precision=precision,
+   rngs=rngs,
+  )
+  self.q_proj = linear_class(hidden_size, num_attention_heads * self.head_dim)
+  self.k_proj = linear_class(hidden_size, num_key_value_heads * self.head_dim)
+  self.v_proj = linear_class(hidden_size, num_key_value_heads * self.head_dim)
+  self.o_proj = linear_class(num_attention_heads * self.head_dim, hidden_size)
+
+  config = jfa.AttentionConfig(platform=jfa.Platform.TRITON, backend=jfa.Backend.GPU)
+
+  self.jfa2 = jfa.FlashAttention(config)
+
+ def __call__(
+  self,
+  hidden_states: chex.Array,
+  attention_mask: chex.Array,
+  causal: bool = True,
+ ) -> tp.Tuple[chex.Array, chex.Array]:
+  batch_size, sequence_length = hidden_states.shape[:2]
+  query_states, key_states, value_states = (
+   self.q_proj(hidden_states),
+   self.k_proj(hidden_states),
+   self.v_proj(hidden_states),
+  )
+  qshape = (
+   batch_size,
+   sequence_length,
+   self.num_attention_heads,
+   self.head_dim,
+  )
+  kv_shape = (
+   batch_size,
+   sequence_length,
+   self.num_key_value_heads,
+   self.head_dim,
+  )
+  query_states = query_states.reshape(qshape)
+  key_states = key_states.reshape(kv_shape)
+  value_states = value_states.reshape(kv_shape)
+  attn_output = self.jfa2.forward(
+   query_states.astype(jnp.bfloat16),
+   key_states.astype(jnp.bfloat16),
+   value_states.astype(jnp.bfloat16),
+   jnp.where(attention_mask, 0, jnp.finfo(query_states).min).astype(jnp.bfloat16),
+   causal=causal,
+  )
+  attn_output = jnp.reshape(attn_output, (batch_size, sequence_length, -1))
+  attn_output = self.o_proj(attn_output)
+  return attn_output
+```
+
+## Platform-Specific Examples
+
+### Using JAX Backend
+
+```python
+jax_flash_attn = jfa.FlashAttention(
+ jfa.AttentionConfig(
+  platform=jfa.Platform.JAX,
+  backend=jfa.Backend.CPU,  # Works on any hardware
+ )
+)
+
+output = jax_flash_attn(query, key, value)
+```
+
+### Using Pallas for TPU
+
+```python
+tpu_flash_attn = jfa.FlashAttention(
+ jfa.AttentionConfig(
+  platform=jfa.Platform.PALLAS,
+  backend=jfa.Backend.TPU,
+ )
+)
+
+output = tpu_flash_attn(query, key, value)
+```
+
+## Integration with JAX Transformations
+
+```python
+@jax.jit
+def attention_forward(q, k, v, mask=None):
+ return flash_attention(
+  query=q,
+  key=k,
+  value=v,
+  attention_mask=mask,
+  causal=True
+ )
+
+# JIT-compiled function
+fast_attention = attention_forward(query, key, value)
+
+# With gradient computation
+def loss_fn(q, k, v):
+ attn_output = flash_attention(q, k, v, causal=True)
+ return jnp.mean(attn_output)
+
+grads = jax.grad(loss_fn)(query, key, value)
+```
 
 ## Limitations
 
@@ -133,8 +252,9 @@ attention = get_cached_flash_attention(
 - Custom attention masks are not yet supported (use bias instead).
 
 ## Contributing
+
 Contributions are welcome! Please feel free to submit a Pull Request.
- 
+
 ## Citation
 
 If you use this implementation in your research, please cite:
@@ -146,6 +266,7 @@ If you use this implementation in your research, please cite:
     url = {https://github.com/erfanzar/jax-flash-attn2}
 }
 ```
+
 ### refrence citations
 
 ```bibtex
@@ -165,11 +286,4 @@ If you use this implementation in your research, please cite:
 
 ## Acknowledgments And Refrences
 
-1. This implementation (MHA) is based on:
-- [Flash Attention 2.0 paper](https://arxiv.org/abs/2205.14135)
-- JAX ecosystem tools and libraries
-- Triton and Pallas optimization frameworks
-
-2. Custom Triton Uses [`JAX-Triton`](https://github.com/jax-ml/jax-triton/)
-
-3. All of kernels are copied from [`EasyDeL`](https://github.com/erfanzar/Easydel)
+1. All of kernels are copied from [`EasyDeL`](https://github.com/erfanzar/Easydel)

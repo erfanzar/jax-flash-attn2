@@ -12,18 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from jax_flash_attn2.flash_attention import (
+from .flash_attention import (
 	AttentionConfig,
+	Backend,
 	FlashAttention,
+	Platform,
 	create_flash_attention,
-	get_cached_flash_attention,
+)
+from .flash_attention_jax import jax_flash_attention
+from .flash_attention_triton import triton_flash_attention
+from .refrence_call import basic_attention_refrence
+
+__all__ = (
+	"AttentionConfig",
+	"Backend",
+	"FlashAttention",
+	"Platform",
+	"create_flash_attention",
+	"triton_flash_attention",
+	"jax_flash_attention",
+	"basic_attention_refrence",
 )
 
-__all__ = [
-	"create_flash_attention",
-	"get_cached_flash_attention",
-	"FlashAttention",
-	"AttentionConfig",
-]
-
-__version__ = "0.0.2"
+__version__ = "0.0.3"

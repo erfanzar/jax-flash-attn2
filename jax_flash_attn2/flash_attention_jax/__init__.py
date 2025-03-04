@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from jax_flash_attn2.cpu_calls.mha import jax_flash_attn_2_mu
+from ._flash_attention import flash_attention as jax_flash_attention
 
-__all__ = ["jax_flash_attn_2_mu"]
+__all__ = ("jax_flash_attention",)

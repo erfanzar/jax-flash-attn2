@@ -1,9 +1,7 @@
 import logging
 
-import jax.numpy as jnp
 from jax import random as jrandom
 from jax.interpreters import pxla
-from jax.lax import with_sharding_constraint as _with_sharding_constraint
 from jax.sharding import PartitionSpec
 
 
@@ -70,29 +68,6 @@ def names_in_current_mesh(*names: str) -> bool:
 	"""
 	mesh_axis_names = pxla.thread_resources.env.physical_mesh.axis_names
 	return set(names) <= set(mesh_axis_names)
-
-
-def with_sharding_constraint(
-	x: jnp.ndarray, partition_specs: dict[str, PartitionSpec]
-) -> jnp.ndarray:
-	"""
-	Apply sharding constraints if axis names are present in the current mesh.
-
-	This is a smarter version of `jax.lax.with_sharding_constraint`. It only applies the
-	sharding constraint if all the axis names specified in the `partition_specs` are
-	present in the current JAX mesh.
-
-	Args:
-	    x: The JAX array to apply sharding constraints to.
-	    partition_specs: A dictionary mapping parameter names to their respective `PartitionSpec`.
-
-	Returns:
-	    The JAX array with sharding constraints applied (if applicable).
-	"""
-	axis_names = get_names_from_partition_spec(partition_specs)
-	if names_in_current_mesh(*axis_names):
-		x = _with_sharding_constraint(x, partition_specs)
-	return x
 
 
 def get_names_from_partition_spec(

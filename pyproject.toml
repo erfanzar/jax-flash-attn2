@@ -22,13 +22,12 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.10"
-jax = ">=0.4.33"
-jaxlib = ">=0.4.33"
-triton = "~=3.0.0"
-scipy = "1.13.1"
-einops = "*"
-chex = "*"
+python = ">=3.10,<3.14"
+jax = ">=0.4.36"
+jaxlib = ">=0.4.36"
+eformer = "0.0.15"
+einops = "~0.8.0"  
+triton = "~3.2.0"
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B"]
